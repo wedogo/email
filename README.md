@@ -17,6 +17,7 @@ A GO library for the creation of email messages.
 
 ### Scope
  - Only creation of messages and exporting them to bytes or writer
+ - Sending (with smtp or other method) is explicitly not in scope. It might come later in another (sub)-package
  
 # Other Go email packages
 This is a list of other Go packages that aim to do similar things. Some of these are used for inspiration. Any critism mentioned with the package is just meant as a warning to self to avoid similar pitfalls.
