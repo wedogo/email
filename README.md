@@ -2,6 +2,10 @@
 A GO library for the creation of email messages.
 
 ## Design philosofies
+Normal action should be easy and somewhat fool-proof, advanced actions must be 
+possible, but are not necessary fool-proof. As an example, the format of the 
+"to" header is strictly checked, but not all (obscure) headers are checked if 
+they conform the rfc5322
 
 ### Standards
  - Following RFC standards where possible
@@ -13,7 +17,7 @@ A GO library for the creation of email messages.
  - No dependencies outside Go standard lib
  - Fully tested
  - Following the Go style guide and common practices
- - In line with parsing packages in net/mail and mime
+ - Possibly in line with parsing packages in net/mail and mime
 
 ### Scope
  - Only creation of messages and exporting them to bytes or writer
