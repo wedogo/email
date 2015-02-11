@@ -19,6 +19,12 @@ A GO library for the creation of email messages.
  - Only creation of messages and exporting them to bytes or writer
  - Sending (with smtp or other method) is explicitly not in scope. It might come later in another (sub)-package
  
+### Target example cases
+ - Send a text email to the linux kernel mailing list with patch as inline attachment
+ - Send a registration email in both html and text
+ - Send an email with pictures "inline"
+ - Send an email with pictures as attachments
+
 # Other Go email packages
 This is a list of other Go packages that aim to do similar things. Some of these are used for inspiration. Any critism mentioned with the package is just meant as a warning to self to avoid similar pitfalls.
 
