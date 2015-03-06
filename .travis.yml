@@ -8,7 +8,7 @@ go:
 
 sudo: false
 
-script: go build -v
+script: go test ./...
 
 notifications:
   email:
