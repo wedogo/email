@@ -96,7 +96,7 @@ func escapeWord(word string) []byte {
 	}
 
 	result := []byte{}
-	line := bytes.NewBufferString(" =?utf-8?q?")
+	line := bytes.NewBufferString("=?utf-8?q?")
 
 	for i := 0; i < len(word); i++ {
 
@@ -123,7 +123,7 @@ func escapeWord(word string) []byte {
 }
 
 func writeEscapeHeader(w io.Writer, key, value string) {
-	line := []byte(fmt.Sprintf("%s: ", key))
+	line := []byte(fmt.Sprintf("%s: ", textproto.CanonicalMIMEHeaderKey(key)))
 	for _, word := range strings.SplitAfter(value, " ") {
 		esc := escapeWord(word)
 		if len(line)+len(esc) > lineShouldLength {
@@ -139,7 +139,7 @@ func writeEscapeHeader(w io.Writer, key, value string) {
 }
 
 func writeEscapeAddressHeader(w io.Writer, key string, addresses ...mail.Address) {
-	line := []byte(fmt.Sprintf("%s:", key))
+	line := []byte(fmt.Sprintf("%s:", textproto.CanonicalMIMEHeaderKey(key)))
 
 	for i, address := range addresses {
 		if i != 0 {
@@ -193,6 +193,9 @@ func (e *Email) WriteTo(w io.Writer, m Mode) error {
 	writeEscapeHeader(w, "Subject", e.Subject)
 	writeEscapeHeader(w, "Message-Id", e.MessageId)
 
+	if e.Headers == nil {
+		e.Headers = make(textproto.MIMEHeader)
+	}
 	for key, values := range e.Headers {
 		for _, value := range values {
 			writeEscapeHeader(w, key, value)
@@ -208,6 +211,9 @@ func (e *Email) WriteTo(w io.Writer, m Mode) error {
 // Add a header to the message. These headers are not validated, and headers
 // that are represented in another field are throwing an error.
 func (e *Email) AddHeader(key, value string) error {
+	if e.Headers == nil {
+		e.Headers = make(textproto.MIMEHeader)
+	}
 	e.Headers.Add(key, value)
 	return nil
 }
