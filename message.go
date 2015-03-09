@@ -169,7 +169,7 @@ func (e *Email) WriteTo(w io.Writer, m Mode) error {
 		e.Date = time.Now()
 	}
 	if e.MessageId == "" {
-		e.MessageId = genMessageId()
+		e.MessageId = genenerateMessageId()
 	}
 	if e.From.Address == "" {
 		return errors.New("email: From is required")
@@ -243,10 +243,6 @@ func (e *Email) AddHTMLBody(r io.Reader, charset string) error {
 	return nil
 }
 
-func genMessageId() string {
-	return "message id"
-}
-
 type MIMEPart struct {
 	Type        string
 	Disposition string
@@ -270,9 +266,17 @@ type MIMEMultipart struct {
 }
 
 func generateBoundary() string {
+	return "boundary"
+}
 
+func genenerateMessageId() string {
+	return "message id"
+}
+
+func generateContentId() string {
+	return "content id"
 }
 
 func (p *MIMEMultipart) WriteTo(w io.Writer, m Mode) error {
-
+	return nil
 }
