@@ -17,6 +17,28 @@ import (
 	"time"
 )
 
+// The mode determines the maximum output encoding, 7Bit, 8Bit or Binary.
+// See also MIME.WriteTo()
+type Mode int
+
+const (
+	Mode7Bit Mode = iota
+	Mode8Bit
+	ModeBinary
+)
+
+const lineEnd string = "\r\n"
+const lineShouldLength = 78
+const lineMaxLength = 998
+const headerBufSize = 50 * lineShouldLength
+const headerBufSizeMime = 4 * lineShouldLength
+
+var (
+	ErrFromRequired    = errors.New("email: From is required")
+	ErrInvalidMimeTree = errors.New("email: Ambigious MIME tree for inserting text or attachment")
+	ErrNoBody          = errors.New("email: body is missing")
+)
+
 // An email contains all field needing for constructing the message. The actual
 // message is a tree of email (MIME) parts.
 type Email struct {
@@ -36,20 +58,6 @@ type Email struct {
 	// Actual message
 	Message MIME
 }
-
-// The mode determines the maximum output encoding, 7Bit, 8Bit or Binary.
-// See also Message.WriteTo()
-type Mode int
-
-const (
-	Mode7Bit Mode = iota
-	Mode8Bit
-	ModeBinary
-)
-
-const lineEnd string = "\r\n"
-const lineShouldLength = 78
-const lineMaxLength = 998
 
 type MIME interface {
 	WriteTo(w io.Writer, m Mode) error
@@ -77,9 +85,9 @@ func (e *Email) AddBcc(a ...mail.Address) {
 
 // Export this emails to a byte string. It calls ToWriter.
 func (e *Email) Bytes(m Mode) ([]byte, error) {
-	b := new(bytes.Buffer)
-	err := e.WriteTo(b, m)
-	return b.Bytes(), err
+	buf := new(bytes.Buffer)
+	err := e.WriteTo(buf, m)
+	return buf.Bytes(), err
 }
 
 func escapeWord(word string) []byte {
@@ -122,23 +130,23 @@ func escapeWord(word string) []byte {
 
 }
 
-func writeEscapeHeader(w io.Writer, key, value string) {
+func writeEscapeHeader(b *bytes.Buffer, key, value string) {
 	line := []byte(fmt.Sprintf("%s: ", textproto.CanonicalMIMEHeaderKey(key)))
 	for _, word := range strings.SplitAfter(value, " ") {
 		esc := escapeWord(word)
 		if len(line)+len(esc) > lineShouldLength {
-			w.Write(line)
-			w.Write([]byte(lineEnd))
+			b.Write(line)
+			b.WriteString(lineEnd)
 			line = append([]byte(" "), esc...)
 		} else {
 			line = append(line, esc...)
 		}
 	}
-	w.Write(line)
-	w.Write([]byte(lineEnd))
+	b.Write(line)
+	b.WriteString(lineEnd)
 }
 
-func writeEscapeAddressHeader(w io.Writer, key string, addresses ...mail.Address) {
+func writeEscapeAddressHeader(b *bytes.Buffer, key string, addresses ...mail.Address) {
 	line := []byte(fmt.Sprintf("%s:", textproto.CanonicalMIMEHeaderKey(key)))
 
 	for i, address := range addresses {
@@ -149,7 +157,7 @@ func writeEscapeAddressHeader(w io.Writer, key string, addresses ...mail.Address
 		s := address.String()
 		if len(line)+len(s) >= lineShouldLength {
 			line = append(line, lineEnd...)
-			w.Write(line)
+			b.Write(line)
 			line = []byte{}
 		}
 		line = append(line, ' ')
@@ -157,7 +165,14 @@ func writeEscapeAddressHeader(w io.Writer, key string, addresses ...mail.Address
 	}
 
 	line = append(line, lineEnd...)
-	w.Write(line)
+	b.Write(line)
+}
+
+func writeBoundary(w io.Writer, boundary string) error {
+	if _, err := w.Write([]byte(lineEnd + boundary)); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Write this email to a writer. The mode determines what is the most liberal
@@ -165,6 +180,9 @@ func writeEscapeAddressHeader(w io.Writer, key string, addresses ...mail.Address
 // be base64-encoded and in case of 7-bit, utf8-text will be encoded as
 // quoted-printable
 func (e *Email) WriteTo(w io.Writer, m Mode) error {
+	buf := &bytes.Buffer{}
+	buf.Grow(headerBufSize)
+
 	if e.Date.IsZero() {
 		e.Date = time.Now()
 	}
@@ -172,39 +190,44 @@ func (e *Email) WriteTo(w io.Writer, m Mode) error {
 		e.MessageId = genenerateMessageId()
 	}
 	if e.From.Address == "" {
-		return errors.New("email: From is required")
+		return ErrFromRequired
 	}
-
-	writeEscapeHeader(w, "Date", e.Date.Format(time.RFC1123Z))
-	writeEscapeAddressHeader(w, "From", e.From)
-	if len(e.To) > 0 {
-		writeEscapeAddressHeader(w, "To", e.To...)
+	if e.Message == nil {
+		return ErrNoBody
 	}
-	if len(e.Cc) > 0 {
-		writeEscapeAddressHeader(w, "Cc", e.Cc...)
-	}
-	if len(e.Bcc) > 0 {
-		writeEscapeAddressHeader(w, "Bcc", e.Bcc...)
-	}
-	if len(e.ReplyTo) > 0 {
-		writeEscapeAddressHeader(w, "Reply-To", e.ReplyTo...)
-	}
-
-	writeEscapeHeader(w, "Subject", e.Subject)
-	writeEscapeHeader(w, "Message-Id", e.MessageId)
-
 	if e.Headers == nil {
 		e.Headers = make(textproto.MIMEHeader)
 	}
+
+	writeEscapeHeader(buf, "Date", e.Date.Format(time.RFC1123Z))
+	writeEscapeAddressHeader(buf, "From", e.From)
+
+	if len(e.To) > 0 {
+		writeEscapeAddressHeader(buf, "To", e.To...)
+	}
+	if len(e.Cc) > 0 {
+		writeEscapeAddressHeader(buf, "Cc", e.Cc...)
+	}
+	if len(e.Bcc) > 0 {
+		writeEscapeAddressHeader(buf, "Bcc", e.Bcc...)
+	}
+	if len(e.ReplyTo) > 0 {
+		writeEscapeAddressHeader(buf, "Reply-To", e.ReplyTo...)
+	}
+	writeEscapeHeader(buf, "Subject", e.Subject)
+	writeEscapeHeader(buf, "Message-Id", e.MessageId)
 
 	e.Headers.Add("MIME-Version", "1.0")
 
 	for key, values := range e.Headers {
 		for _, value := range values {
-			writeEscapeHeader(w, key, value)
+			writeEscapeHeader(buf, key, value)
 		}
 	}
 
+	if _, err := io.Copy(w, buf); err != nil {
+		return err
+	}
 	return e.Message.WriteTo(w, m)
 }
 
@@ -221,25 +244,58 @@ func (e *Email) AddHeader(key, value string) error {
 // Add a text body to this message. The text must be UTF-8. Adding multiple text
 // bodies is not recommended, but will not throw an error.
 func (e *Email) AddTextBody(r io.Reader) error {
-	//if e.Message == nil {
-	//	e.Message = &MIMEPart{
-	//		Type:         "text/plain",
-	//		Disposition:  "inline",
-	//		Charset:      charset,
-	//		ExtraHeaders: textproto.MIMEHeader{},
-	//		Content:      r,
-	//	}
-	//}
+	textPart := &MIMEPart{
+		Type:        "text/plain",
+		Disposition: "inline",
+		Charset:     "utf-8",
+		Headers:     textproto.MIMEHeader{},
+		Content:     r,
+	}
+
+	switch p := e.Message.(type) {
+	case nil:
+		e.Message = textPart
+	case *MIMEMultipart:
+		p.Parts = append(p.Parts, textPart)
+	case *MIMEPart:
+		e.Message = &MIMEMultipart{
+			Type:  "multipart/alternative",
+			Parts: []MIME{p, textPart},
+		}
+	default:
+		return ErrInvalidMimeTree
+	}
 	return nil
 }
 
 // Add a text body to this message. The text must be UTF-8. Adding multiple text
 // bodies is not recommended, but will not throw an error.
-func (e *Email) AddTextBodyString() error {
-	return nil
+func (e *Email) AddTextBodyString(s string) error {
+	return e.AddTextBody(bytes.NewBufferString(s))
 }
 
 func (e *Email) AddHTMLBody(r io.Reader, charset string) error {
+	htmlPart := &MIMEPart{
+		Type:        "text/html",
+		Disposition: "inline",
+		Charset:     "utf-8",
+		Headers:     textproto.MIMEHeader{},
+		Content:     r,
+	}
+
+	switch p := e.Message.(type) {
+	case nil:
+		e.Message = htmlPart
+	case *MIMEMultipart:
+		p.Parts = append(p.Parts, htmlPart)
+	case *MIMEPart:
+		e.Message = &MIMEMultipart{
+			Type:  "multipart/alternative",
+			Parts: []MIME{htmlPart, p},
+		}
+	default:
+		return ErrInvalidMimeTree
+	}
 	return nil
 }
 
@@ -256,13 +312,25 @@ func (p *MIMEPart) Bytes() ([]byte, error) {
 }
 
 func (p *MIMEPart) WriteTo(w io.Writer, m Mode) error {
-	return nil
+	buf := &bytes.Buffer{}
+	buf.Grow(headerBufSizeMime)
+
+	writeEscapeHeader(buf, "Content-Type", p.Type)
+
+	buf.WriteString(lineEnd)
+
+	if _, err := io.Copy(w, buf); err != nil {
+		return err
+	}
+	_, err := io.Copy(w, p.Content)
+	return err
 }
 
 type MIMEMultipart struct {
-	MIMEPart
+	Type     string
+	Headers  textproto.MIMEHeader
 	Boundary string
-	Parts    []MIMEPart
+	Parts    []MIME
 }
 
 func generateBoundary() string {
@@ -278,5 +346,31 @@ func generateContentId() string {
 }
 
 func (p *MIMEMultipart) WriteTo(w io.Writer, m Mode) error {
+	buf := &bytes.Buffer{}
+	buf.Grow(headerBufSizeMime)
+
+	if p.Boundary == "" {
+		p.Boundary = generateBoundary()
+	}
+
+	writeEscapeHeader(buf, "Content-Type", p.Type)
+
+	buf.WriteString(lineEnd)
+
+	if _, err := io.Copy(w, buf); err != nil {
+		return err
+	}
+
+	if err := writeBoundary(w, p.Boundary); err != nil {
+		return err
+	}
+
+	for _, part := range p.Parts {
+		if err := part.WriteTo(w, m); err != nil {
+			return err
+		} else if err = writeBoundary(w, p.Boundary); err != nil {
+			return err
+		}
+	}
 	return nil
 }

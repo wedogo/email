@@ -113,14 +113,18 @@ func TestMessage(t *testing.T) {
 	m.MessageId = "<test@abc.org>"
 	m.AddHeader("Foo", "Bar")
 	m.AddHeader("Foo", "Bar")
+
+	m.AddTextBodyString("Hello")
 	b, err := m.Bytes(Mode8Bit)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 
 	mess, err := mail.ReadMessage(bytes.NewBuffer(b))
 	if err != nil {
 		t.Error(err)
+		return
 	}
 
 	testHeaders := []struct {
@@ -183,13 +187,16 @@ func TestMinimalMessage(t *testing.T) {
 		t.Errorf("Expected From error, but got %+v", err)
 	}
 	m.From = mail.Address{"Test", "test@example.org"}
+	m.AddTextBodyString("")
 
 	if b, err := m.Bytes(Mode8Bit); err != nil {
 		t.Errorf("Unexpected error %+v", err)
+		return
 	} else {
 		mess, err := mail.ReadMessage(bytes.NewBuffer(b))
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		headers := []string{"From", "Message-Id", "Date"}
