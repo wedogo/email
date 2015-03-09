@@ -34,7 +34,7 @@ type Email struct {
 	Headers textproto.MIMEHeader
 
 	// Actual message
-	Message MIMEPart
+	Message MIME
 }
 
 // The mode determines the maximum output encoding, 7Bit, 8Bit or Binary.
@@ -51,7 +51,7 @@ const lineEnd string = "\r\n"
 const lineShouldLength = 78
 const lineMaxLength = 998
 
-type Message interface {
+type MIME interface {
 	WriteTo(w io.Writer, m Mode) error
 }
 
@@ -196,16 +196,16 @@ func (e *Email) WriteTo(w io.Writer, m Mode) error {
 	if e.Headers == nil {
 		e.Headers = make(textproto.MIMEHeader)
 	}
+
+	e.Headers.Add("MIME-Version", "1.0")
+
 	for key, values := range e.Headers {
 		for _, value := range values {
 			writeEscapeHeader(w, key, value)
 		}
 	}
 
-	w.Write([]byte(lineEnd))
-	w.Write([]byte("body"))
-	w.Write([]byte(lineEnd))
-	return nil
+	return e.Message.WriteTo(w, m)
 }
 
 // Add a header to the message. These headers are not validated, and headers
@@ -248,15 +248,11 @@ func genMessageId() string {
 }
 
 type MIMEPart struct {
-	Type         string
-	Disposition  string
-	Charset      string
-	ExtraHeaders textproto.MIMEHeader
-	Content      io.Reader
-}
-
-func (p *MIMEPart) Headers() textproto.MIMEHeader {
-	return nil
+	Type        string
+	Disposition string
+	Charset     string
+	Headers     textproto.MIMEHeader
+	Content     io.Reader
 }
 
 func (p *MIMEPart) Bytes() ([]byte, error) {
@@ -269,5 +265,14 @@ func (p *MIMEPart) WriteTo(w io.Writer, m Mode) error {
 
 type MIMEMultipart struct {
 	MIMEPart
-	Parts []MIMEPart
+	Boundary string
+	Parts    []MIMEPart
+}
+
+func generateBoundary() string {
+
+}
+
+func (p *MIMEMultipart) WriteTo(w io.Writer, m Mode) error {
+
 }
