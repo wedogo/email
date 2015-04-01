@@ -8,6 +8,7 @@ package email
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -29,15 +30,30 @@ const (
 
 const lineEnd string = "\r\n"
 const lineShouldLength = 78
+const lineQPLength = 76
 const lineMaxLength = 998
 const headerBufSize = 50 * lineShouldLength
 const headerBufSizeMime = 4 * lineShouldLength
+
+const cr = 13
+const lf = 10
 
 var (
 	ErrFromRequired    = errors.New("email: From is required")
 	ErrInvalidMimeTree = errors.New("email: Ambigious MIME tree for inserting text or attachment")
 	ErrNoBody          = errors.New("email: body is missing")
+	errLineTooLong     = errors.New("contains too long line")
 )
+
+// Function to generate a boundary for a multipart message
+var BoundaryGenerator = func(p *MIMEMultipart) string {
+	return "boundary"
+}
+
+// Function to generate message ids
+var MessageIDGenerator = func(p *Email) string {
+	return "messageid"
+}
 
 // An email contains all field needing for constructing the message. The actual
 // message is a tree of email (MIME) parts.
@@ -169,7 +185,7 @@ func writeEscapeAddressHeader(b *bytes.Buffer, key string, addresses ...mail.Add
 }
 
 func writeBoundary(w io.Writer, boundary string) error {
-	if _, err := w.Write([]byte(lineEnd + boundary)); err != nil {
+	if _, err := w.Write([]byte(lineEnd + "--" + boundary + "--" + lineEnd)); err != nil {
 		return err
 	}
 	return nil
@@ -187,7 +203,7 @@ func (e *Email) WriteTo(w io.Writer, m Mode) error {
 		e.Date = time.Now()
 	}
 	if e.MessageId == "" {
-		e.MessageId = genenerateMessageId()
+		e.MessageId = MessageIDGenerator(e)
 	}
 	if e.From.Address == "" {
 		return ErrFromRequired
@@ -244,23 +260,24 @@ func (e *Email) AddHeader(key, value string) error {
 // Add a text body to this message. The text must be UTF-8. Adding multiple text
 // bodies is not recommended, but will not throw an error.
 func (e *Email) AddTextBody(r io.Reader) error {
-	textPart := &MIMEPart{
+	buffer := &bytes.Buffer{}
+	io.Copy(buffer, r)
+	textPart := &MIMEPartText{
 		Type:        "text/plain",
 		Disposition: "inline",
-		Charset:     "utf-8",
 		Headers:     textproto.MIMEHeader{},
-		Content:     r,
+		Content:     buffer,
 	}
 
 	switch p := e.Message.(type) {
 	case nil:
 		e.Message = textPart
 	case *MIMEMultipart:
-		p.Parts = append(p.Parts, textPart)
-	case *MIMEPart:
+		p.Parts = append([]MIME{textPart}, p.Parts...)
+	case *MIMEPartText:
 		e.Message = &MIMEMultipart{
 			Type:  "multipart/alternative",
-			Parts: []MIME{p, textPart},
+			Parts: []MIME{textPart, p},
 		}
 	default:
 		return ErrInvalidMimeTree
@@ -274,13 +291,14 @@ func (e *Email) AddTextBodyString(s string) error {
 	return e.AddTextBody(bytes.NewBufferString(s))
 }
 
-func (e *Email) AddHTMLBody(r io.Reader, charset string) error {
-	htmlPart := &MIMEPart{
+func (e *Email) AddHTMLBody(r io.Reader) error {
+	buffer := &bytes.Buffer{}
+	io.Copy(buffer, r)
+	htmlPart := &MIMEPartText{
 		Type:        "text/html",
 		Disposition: "inline",
-		Charset:     "utf-8",
 		Headers:     textproto.MIMEHeader{},
-		Content:     r,
+		Content:     buffer,
 	}
 
 	switch p := e.Message.(type) {
@@ -288,10 +306,10 @@ func (e *Email) AddHTMLBody(r io.Reader, charset string) error {
 		e.Message = htmlPart
 	case *MIMEMultipart:
 		p.Parts = append(p.Parts, htmlPart)
-	case *MIMEPart:
+	case *MIMEPartText:
 		e.Message = &MIMEMultipart{
 			Type:  "multipart/alternative",
-			Parts: []MIME{htmlPart, p},
+			Parts: []MIME{p, htmlPart},
 		}
 	default:
 		return ErrInvalidMimeTree
@@ -299,31 +317,214 @@ func (e *Email) AddHTMLBody(r io.Reader, charset string) error {
 	return nil
 }
 
-type MIMEPart struct {
+type MIMEPartText struct {
 	Type        string
 	Disposition string
+	Headers     textproto.MIMEHeader
+	Content     *bytes.Buffer
 	Charset     string
+}
+
+type MIMEPartBinary struct {
+	Type        string
+	Disposition string
 	Headers     textproto.MIMEHeader
 	Content     io.Reader
 }
 
-func (p *MIMEPart) Bytes() ([]byte, error) {
-	return nil, nil
+func bit8Encode(buf []byte) ([]byte, error) {
+	// to simplify parsing, replace all <CR><LF> with <LF>
+	buf = bytes.Replace(buf, []byte{cr, lf}, []byte{lf}, -1)
+
+	lineLength := 0
+	out := &bytes.Buffer{}
+	out.Grow(len(buf))
+
+	for _, b := range buf {
+		switch b {
+		case cr, lf:
+			out.WriteString(lineEnd)
+			lineLength = 0
+		default:
+			lineLength++
+			if lineLength > lineMaxLength {
+				return nil, errLineTooLong
+			}
+			out.WriteByte(b)
+		}
+	}
+	if lineLength > 0 {
+		out.WriteString(lineEnd)
+	}
+
+	return out.Bytes(), nil
 }
 
-func (p *MIMEPart) WriteTo(w io.Writer, m Mode) error {
-	buf := &bytes.Buffer{}
-	buf.Grow(headerBufSizeMime)
+func qpEncode(buf []byte) []byte {
+	// to simplify parsing, replace all <CR><LF> with <LF>
+	buf = bytes.Replace(buf, []byte{cr, lf}, []byte{lf}, -1)
 
-	writeEscapeHeader(buf, "Content-Type", p.Type)
+	out := &bytes.Buffer{}
+	out.Grow(len(buf))
 
-	buf.WriteString(lineEnd)
+	line := make([]byte, 0, lineQPLength)
 
-	if _, err := io.Copy(w, buf); err != nil {
+	writeSoftEnd := func() {
+		line = append(line, '=')
+		out.Write(line)
+		out.WriteString(lineEnd)
+		line = line[0:0]
+	}
+
+	writeEnd := func() {
+		if len(line) > 0 && (line[len(line)-1] == ' ' || line[len(line)-1] == '\t') {
+			writeSoftEnd()
+		}
+		out.Write(line)
+		out.WriteString(lineEnd)
+		line = line[0:0]
+	}
+
+	for _, b := range buf {
+		switch {
+		case b == '\r' || b == '\n':
+			writeEnd()
+		case b < 33 || b > 126 || b == 61:
+			if len(line) >= lineQPLength-3 {
+				writeSoftEnd()
+			}
+			line = append(line, fmt.Sprintf("=%02X", b)...)
+		case b == ' ' || b == '\t':
+			if len(line) >= lineQPLength-2 {
+				writeSoftEnd()
+			}
+			line = append(line, b)
+		default:
+			if len(line) >= lineQPLength-1 {
+				writeSoftEnd()
+			}
+			line = append(line, b)
+		}
+	}
+	if len(line) > 0 {
+		writeEnd()
+	}
+	return out.Bytes()
+}
+
+type lineChopper struct {
+	writer io.Writer
+	chars  int
+}
+
+func (l *lineChopper) Write(p []byte) (n int, err error) {
+	for l.chars+len(p) > lineQPLength {
+		if m, err := l.writer.Write(p[:lineQPLength-l.chars]); err != nil {
+			return n + m, err
+		} else {
+			n += m
+		}
+		p = p[lineQPLength-l.chars:]
+		l.chars = 0
+		if m, err := l.writer.Write([]byte(lineEnd)); err != nil {
+			return n + m, err
+		} else {
+			n += m
+		}
+	}
+	l.chars = len(p)
+	m, err := l.writer.Write(p)
+	n += m
+	return
+}
+
+func (l *lineChopper) Close() (err error) {
+	if l.chars > 0 {
+		_, err = l.writer.Write([]byte(lineEnd))
+	}
+	return
+}
+
+func newLineChopper(w io.Writer) io.WriteCloser {
+	return &lineChopper{writer: w}
+}
+
+func base64EncodeCopy(w io.Writer, r io.Reader) error {
+	chopper := newLineChopper(w)
+	encoder := base64.NewEncoder(base64.StdEncoding, chopper)
+	if _, err := io.Copy(encoder, r); err != nil {
 		return err
 	}
-	_, err := io.Copy(w, p.Content)
+
+	if err := encoder.Close(); err != nil {
+		return err
+	}
+
+	return chopper.Close()
+}
+
+func (p *MIMEPartText) WriteTo(w io.Writer, m Mode) error {
+	var body []byte
+	var err error
+	contentEncoding := "8bit"
+
+	if m >= Mode8Bit {
+		if body, err = bit8Encode(p.Content.Bytes()); err != nil && err != errLineTooLong {
+			return err
+		}
+	}
+	if body == nil {
+		body = qpEncode(p.Content.Bytes())
+		contentEncoding = "quoted-printable"
+	}
+
+	if p.Charset == "" {
+		p.Charset = "utf-8"
+	}
+
+	headerBuf := &bytes.Buffer{}
+	headerBuf.Grow(headerBufSizeMime)
+
+	writeEscapeHeader(headerBuf, "Content-Type", fmt.Sprintf("%s; charset=%s", p.Type, p.Charset))
+	writeEscapeHeader(headerBuf, "Content-Transfer-Encoding", contentEncoding)
+
+	headerBuf.WriteString(lineEnd)
+
+	if _, err = io.Copy(w, headerBuf); err != nil {
+		return err
+	}
+	_, err = w.Write(body)
 	return err
+}
+
+func (p *MIMEPartBinary) WriteTo(w io.Writer, m Mode) error {
+	contentEncoding := "base64"
+	if m >= ModeBinary {
+		contentEncoding = "binary"
+	}
+
+	headerBuf := &bytes.Buffer{}
+	headerBuf.Grow(headerBufSizeMime)
+
+	writeEscapeHeader(headerBuf, "Content-Type", fmt.Sprintf("%s", p.Type))
+	writeEscapeHeader(headerBuf, "Content-Transfer-Encoding", contentEncoding)
+
+	headerBuf.WriteString(lineEnd)
+
+	if _, err := io.Copy(w, headerBuf); err != nil {
+		return err
+	}
+
+	if m >= ModeBinary {
+		if _, err := io.Copy(w, p.Content); err != nil {
+			return err
+		}
+	} else {
+		if err := base64EncodeCopy(w, p.Content); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type MIMEMultipart struct {
@@ -333,27 +534,15 @@ type MIMEMultipart struct {
 	Parts    []MIME
 }
 
-func generateBoundary() string {
-	return "boundary"
-}
-
-func genenerateMessageId() string {
-	return "message id"
-}
-
-func generateContentId() string {
-	return "content id"
-}
-
 func (p *MIMEMultipart) WriteTo(w io.Writer, m Mode) error {
 	buf := &bytes.Buffer{}
 	buf.Grow(headerBufSizeMime)
 
 	if p.Boundary == "" {
-		p.Boundary = generateBoundary()
+		p.Boundary = BoundaryGenerator(p)
 	}
 
-	writeEscapeHeader(buf, "Content-Type", p.Type)
+	writeEscapeHeader(buf, "Content-Type", fmt.Sprintf("%s; boundary=\"%s\"", p.Type, p.Boundary))
 
 	buf.WriteString(lineEnd)
 

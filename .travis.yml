@@ -7,7 +7,7 @@ go:
 
 sudo: false
 
-script: go test ./...
+script: go get golang.org/x/tools/cmd/cover && go test -cover ./...
 
 notifications:
   email:

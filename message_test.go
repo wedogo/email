@@ -2,10 +2,32 @@ package email
 
 import (
 	"bytes"
+	"errors"
 	"net/mail"
+	"strings"
 	"testing"
 	"time"
 )
+
+var (
+	errMock = errors.New("Mock")
+)
+
+type FailAfterWriter struct {
+	maxRead int
+	n       int
+}
+
+func (w *FailAfterWriter) Write(b []byte) (int, error) {
+	left := w.maxRead - w.n
+
+	if len(b) > left {
+		w.n += left
+		return left, errMock
+	}
+	w.n += len(b)
+	return len(b), nil
+}
 
 func TestEscapeWord(t *testing.T) {
 	tests := []struct {
@@ -187,6 +209,10 @@ func TestMinimalMessage(t *testing.T) {
 		t.Errorf("Expected From error, but got %+v", err)
 	}
 	m.From = mail.Address{"Test", "test@example.org"}
+
+	if _, err := m.Bytes(Mode8Bit); err != ErrNoBody {
+		t.Error("Creating a mail without body should throw an error")
+	}
 	m.AddTextBodyString("")
 
 	if b, err := m.Bytes(Mode8Bit); err != nil {
@@ -206,5 +232,46 @@ func TestMinimalMessage(t *testing.T) {
 			}
 		}
 
+	}
+}
+
+func TestBase64EncodeCopyErrorHandling(t *testing.T) {
+	testData := make([]byte, 69)
+	for _, i := range []int{70, 74, 75, 76, 77, 93, 94, 95} {
+		if err := base64EncodeCopy(&FailAfterWriter{maxRead: i}, bytes.NewBuffer(testData)); err != errMock {
+			t.Errorf("Expected to fail with ErrMock when the write fails after %d bytes, but got %+v", i, err)
+		}
+	}
+	testData = testData[:56]
+	for _, i := range []int{70, 74, 75} {
+		if err := base64EncodeCopy(&FailAfterWriter{maxRead: i}, bytes.NewBuffer(testData)); err != errMock {
+			t.Errorf("Expected to fail with ErrMock when the write fails after %d bytes, but got %+v", i, err)
+		}
+	}
+}
+
+func TestLineChopper(t *testing.T) {
+	testStrings := []string{"Neque porro quisquam est qui dolorem ipsum quia dolor sit amet, consectetur, adipisci velit...", "Lorem"}
+
+	for _, s := range testStrings {
+		buf := &bytes.Buffer{}
+		lc := newLineChopper(buf)
+		n, err := lc.Write([]byte(s))
+		if err != nil {
+			t.Errorf("Unexpected error for linechopper.Write() %+v", err)
+		}
+		expectedN := len(s)/lineQPLength*2 + len(s)
+		if n != expectedN {
+			t.Errorf("Expected %d bytes to be written, got %d", expectedN, n)
+		}
+
+		if buf.Len() != expectedN {
+			t.Errorf("Expected %d bytes to be in buffer, got %d", expectedN, buf.Len())
+		}
+
+		got := strings.Join(strings.Split(buf.String(), lineEnd), "")
+		if got != s {
+			t.Errorf("String %s got mangled into %s during chopping", s, got)
+		}
 	}
 }
